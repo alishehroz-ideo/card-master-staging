@@ -11,7 +11,8 @@
       /* ===== Ideofuzion template — responsive letterbox + loading UI =====
          All overrides live inline here because Unity regenerates TemplateData/style.css
          on every build; !important beats it. Card Master is portrait, authored at 1242x2688
-         (about 9:19.5), so the canvas letterboxes to that aspect rather than to 9:16. */
+         (about 9:19.5). The canvas FILLS the viewport on any phone shape from 0.42 to 9:16 and
+         letterboxes only outside that (see resizeCanvas). */
 
       html, body {
         margin: 0; padding: 0; width: 100%; height: 100%;
@@ -211,14 +212,20 @@
 
       var canvas = document.querySelector("#unity-canvas");
 
-      // ===== Responsive letterbox: largest rect of the game's aspect that fits, centered =====
-      // Aspect comes from the player's web canvas size (Player Settings -> 621 x 1344, the same
-      // aspect as the 1242x2688 the game's UI is authored for; set by WebGLBuilder).
-      var GAME_ASPECT = 621 / 1344;
+      // ===== Fill the viewport; letterbox only beyond the shapes the game supports =====
+      // Locking the canvas to the authored 621x1344 shape put empty bars down both sides on
+      // every phone: a browser's visible area (below its address or "Done" bar) is wider than
+      // 0.462 (QA, 2026-09-11, iPhone in the GameBull app: 0.518). The game adapts instead —
+      // its camera keeps a fixed height and its UI scales with "Expand", so a wider or narrower
+      // screen only adds background round a centred, uncut layout (checked at 0.45, 0.518, 9:16).
+      //   wider than 9:16 (desktop, tablets): letterbox to 9:16, as the other GameBull games do
+      //   narrower than 0.42: letterbox, before the hand's cards reach the screen edges
+      var MAX_ASPECT = 9 / 16, MIN_ASPECT = 0.42;
       function resizeCanvas() {
-        var availW = window.innerWidth, availH = window.innerHeight, w, h;
-        if (availW / availH > GAME_ASPECT) { h = availH; w = Math.round(h * GAME_ASPECT); }
-        else                               { w = availW; h = Math.round(w / GAME_ASPECT); }
+        var availW = window.innerWidth, availH = window.innerHeight, a = availW / availH, w, h;
+        if (a > MAX_ASPECT)      { h = availH; w = Math.round(h * MAX_ASPECT); }
+        else if (a < MIN_ASPECT) { w = availW; h = Math.round(w / MIN_ASPECT); }
+        else                     { w = availW; h = availH; }
         canvas.style.width  = w + "px";
         canvas.style.height = h + "px";
         canvas.style.left   = Math.round((availW - w) / 2) + "px";
