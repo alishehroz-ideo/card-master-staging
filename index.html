@@ -138,19 +138,32 @@
         // lookup and leaves the game itself pointed at the other environment.
         var DEFAULT_API_BASE = "https://api.staging.g-b.store";   // staging
         var DEFAULT_GAME_ID  = "CARD_MASTER";
-        var FETCH_TIMEOUT_MS = 4000;
+
+        // Two different clocks. The one that used to exist ABORTED the lookup at 4 s and painted
+        // the built-in icon for good — but this request races the game's own ~80 MB download, so
+        // on mobile data it routinely took longer, and a tester on a phone never saw the tenant's
+        // icon while it showed every time on fast Wi-Fi (reproduced: an API answering at 6 s left
+        // the built-in icon up for the whole load). Now 4 s only stops the spinner and shows the
+        // built-in icon; the lookup keeps going, and the tenant's icon replaces it the moment it
+        // arrives, for as long as the loading screen is up.
+        var SHOW_BUILTIN_AFTER_MS = 4000;
+        var GIVE_UP_AFTER_MS      = 30000;
 
         var spinner = document.querySelector("#gb-spinner");
         var target  = document.querySelector("#gb-tenant-logo");
         var iconBox = document.querySelector("#unity-logo");
+        var builtinTimer = null;
 
-        // Could not resolve a tenant logo: stop spinning and paint the static game icon,
-        // so the loading screen never sits on an endless spinner or an empty box.
-        function fallback() {
+        // No tenant icon (yet): stop spinning and paint the static game icon, so the loading
+        // screen never sits on an endless spinner or an empty box.
+        function showBuiltin() {
           if (iconBox) iconBox.classList.add("gb-fallback");
           stopSpinner();
         }
-
+        function fallback() {
+          clearTimeout(builtinTimer);
+          showBuiltin();
+        }
         function stopSpinner() {
           if (spinner && spinner.parentNode) spinner.parentNode.removeChild(spinner);
         }
@@ -167,9 +180,11 @@
           // No credentials -> nothing to fetch. Not an error; just keep the static icon.
           if (!tenantSlug || !token) { fallback(); return; }
 
-          // AbortController so a hung API can never pin the spinner on screen.
+          builtinTimer = setTimeout(showBuiltin, SHOW_BUILTIN_AFTER_MS);
+
+          // AbortController only for a request that is truly hung, long after the built-in icon.
           var ctrl = ("AbortController" in window) ? new AbortController() : null;
-          var timer = setTimeout(function () { if (ctrl) ctrl.abort(); }, FETCH_TIMEOUT_MS);
+          var giveUp = setTimeout(function () { if (ctrl) ctrl.abort(); }, GIVE_UP_AFTER_MS);
 
           var url = apiBase + "/play/games/" + encodeURIComponent(gameId) +
                     "/context?tenantSlug=" + encodeURIComponent(tenantSlug);
@@ -181,7 +196,7 @@
           })
             .then(function (r) { return r.ok ? r.json() : null; })   // 401/404 -> null -> fallback
             .then(function (data) {
-              clearTimeout(timer);
+              clearTimeout(giveUp);
               var c = data && data.customization;
 
               // PER-GAME fields only, in this order. logoUrl / tenantLogoUrl / assets[] are
@@ -193,18 +208,26 @@
 
               if (!iconUrl || !target) { fallback(); return; }
 
-              // Preload and only reveal once decoded, so a broken URL never flashes.
+              // Preload and only reveal once decoded, so a broken URL never flashes. NO
+              // crossOrigin: the image is only ever painted as a CSS background, never read back,
+              // so it needs no CORS — and asking for it made the load FAIL whenever the image host
+              // sent no Access-Control-Allow-Origin, or the device had the same image cached from
+              // a plain <img> (the GameBull portal's game list) without it (reproduced).
               var img = new Image();
-              img.crossOrigin = "anonymous";
               img.onload = function () {
+                clearTimeout(builtinTimer);
+                if (!target.parentNode) return;   // the game started first; nothing to show
                 target.style.backgroundImage = 'url("' + iconUrl.replace(/"/g, '%22') + '")';
                 target.classList.add("gb-ready");
-                stopSpinner();       // icon is up - stop spinning, do NOT add the static icon
+                stopSpinner();
+                // If the built-in icon went up while waiting, take it down once the tenant's has
+                // faded in over it — a tenant icon with transparent areas would show it through.
+                setTimeout(function () { if (iconBox) iconBox.classList.remove("gb-fallback"); }, 300);
               };
               img.onerror = fallback;
               img.src = iconUrl;
             })
-            .catch(function () { clearTimeout(timer); fallback(); });   // network / abort / CORS
+            .catch(function () { clearTimeout(giveUp); fallback(); });   // network / abort / CORS
         } catch (e) {
           fallback();   // URLSearchParams or fetch unavailable
         }
